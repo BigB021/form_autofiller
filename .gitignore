@@ -1,0 +1,16 @@
+# Browser profile (holds the Google sign-in cookies - never commit)
+browser_data/
+
+# Documents to upload
+pdfs/
+
+# Tests
+tests/
+
+# Logs
+last_run_log.txt
+*.log
+
+# Python cache
+__pycache__/
+*.py[cod]

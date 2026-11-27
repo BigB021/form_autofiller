@@ -1,0 +1,80 @@
+{
+  "form_url": "https://docs.google.com/forms/d/e/1FAIpQLSeBcvLsAGQZjmuw1h1mv5MKp7OuIyvzPb3BTOzItLnz3gk4ig/viewform?usp=dialog",
+  "submit": false,
+  "typing_delay_ms": 0,
+  "pause_ms": 0,
+
+  "profile": {
+    "last_name": "YOUR LAST NAME",
+    "first_name": "YOUR FIRST NAME",
+    "phone": "0600000000",
+    "email": "email@gmail.com"
+  },
+
+  "option_aliases": {
+    "CZ": ["Czechia", "Czech Republic", "Tchéquie", "République tchèque","Tchéque"],
+    "Poland": ["Pologne"],
+    "Romania": ["Roumanie"],
+    "SE": ["Sweden", "Suède"],
+    "NO": ["Norway", "Norvège"],
+    "DE": ["Germany", "Allemagne"]
+  },
+
+  "fields": [
+    { "question": "E-mail", "type": "tick", "optional": true },
+
+    { "question": "Nom", "aliases": ["Nom de famille"],
+      "type": "text", "value": "{last_name}", "optional": true },
+    { "question": "Prénom",
+      "type": "text", "value": "{first_name}", "optional": true },
+    { "question": "Nom complet", "aliases": ["Nom et prénom", "Prénom et nom", "Nom & prénom", "Nom et prénoms"],
+      "type": "text", "value": "{first_name} {last_name}", "optional": true },
+
+    { "question": "Numéro de téléphone", "aliases": ["Téléphone", "Numéro de portable", "N° de téléphone", "Numéro WhatsApp"],
+      "type": "text", "value": "{phone}" },
+    { "question": "Adresse email", "aliases": ["Adresse e-mail", "Adresse mail", "E-mail", "Email", "Courriel"],
+      "type": "text", "value": "{email}" },
+    { "question": "E-mail", "type": "text", "value": "{email}", "optional": true },
+
+    { "question": "Comité locale (ville)", "aliases": ["Comité local", "Comité local (ville)", "Comité", "Ville"],
+      "type": "choice", "value": ["Marrakech - AEMM", "Marrakech", "AEM-M", "AEMM"] },
+    { "question": "Faculté", "aliases": ["Faculté de médecine", "Établissement", "Université"],
+      "type": "choice", "value": ["FMPM"] },
+    { "question": "Année d'étude", "aliases": ["Année d'étude 25/26", "Année d'études", "Niveau d'études", "Niveau d'étude"],
+      "type": "choice", "value": ["6","sixième année","6ème année"] },
+
+    { "question": "Type de programme(s) auquel(s) vous souhaitez participer",
+      "aliases": ["Type d'échange auquel vous souhaitez participer", "Type d'échange", "Type de programme", "Programme"],
+      "type": "choice", "value": "SCOPE" },
+
+    { "question": "Quel est votre pays de 1er choix ?", "aliases": ["Votre premier choix", "Premier choix"],
+      "section": "SCOPE", "type": "dropdown", "value": "Poland" },
+    { "question": "Quel est votre pays de 2eme choix ?", "aliases": ["Votre deuxième choix", "Deuxième choix"],
+      "section": "SCOPE", "type": "dropdown", "value": "CZ" },
+    { "question": "Quel est votre pays de 3eme choix ?", "aliases": ["Votre troisième choix", "Troisième choix"],
+      "section": "SCOPE", "type": "dropdown", "value": "CZ" },
+    { "question": "Quel est votre pays de 4eme choix ?", "aliases": ["Votre quatrième choix", "Quatrième choix"],
+      "section": "SCOPE", "type": "dropdown", "value": "SE", "optional": true },
+    { "question": "Quel est votre pays de 5eme choix ?", "aliases": ["Votre cinquième choix", "Cinquième choix"],
+      "section": "SCOPE", "type": "dropdown", "value": ["NE","CZ", "SE"], "optional": true },
+
+    { "question": "Quel est votre pays de 1er choix ?", "aliases": ["Votre premier choix", "Premier choix"],
+      "section": "SCORE", "type": "dropdown", "value": "Poland" },
+    { "question": "Quel est votre pays de 2eme choix ?", "aliases": ["Votre deuxième choix", "Deuxième choix"],
+      "section": "SCORE", "type": "dropdown", "value": "CZ" },
+    { "question": "Quel est votre pays de 3eme choix ?", "aliases": ["Votre troisième choix", "Troisième choix"],
+      "section": "SCORE", "type": "dropdown", "value": "CZ" },
+    { "question": "Quel est votre pays de 4eme choix ?", "aliases": ["Votre quatrième choix", "Quatrième choix"],
+      "section": "SCORE", "type": "dropdown", "value": "SE", "optional": true },
+    { "question": "Quel est votre pays de 5eme choix ?", "aliases": ["Votre cinquième choix", "Cinquième choix"],
+      "section": "SCORE", "type": "dropdown", "value": ["NE","CZ", "SE"], "optional": true },
+
+    { "question": "Certificat de scolarité / Carte étudiant", "type": "file", "keywords": ["scolarit"],
+      "value": "C:/Users/Youssef/Desktop/formulaire/autofill/pdfs/tst.pdf", "optional": true },
+    { "question": "Charte des échanges signée avec la mention \"Lu et approuvé\"", "type": "file", "keywords": ["charte"],
+      "value": "C:/Users/Youssef/Desktop/formulaire/autofill/pdfs/tst2.pdf", "optional": true },
+    { "question": "Attestation sur l'honneur signée avec la mention \"Lu et approuvé\"", "type": "file",
+      "keywords": ["attestation", "honneur"],
+      "value": "C:/Users/Youssef/Desktop/formulaire/autofill/pdfs/tst3.pdf", "optional": true }
+  ]
+}
