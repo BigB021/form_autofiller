@@ -150,6 +150,7 @@ SECTION_JS = """() => Array.from(document.querySelectorAll('[role="heading"]'))
     .map(h => (h.innerText || '').trim())
     .filter(t => t && t !== document.title.trim())
     .join(' | ')"""
+TICK_HOLD_MS = 1500     # a tick box must stay ticked this long before it counts as done
 NEXT_WAIT_S = 20  # how long to wait for the next page after 'Suivant' (branching pages are slower)
 
 
@@ -205,6 +206,7 @@ class Filler:
         self.submitted = False
         self.proc = None          # the browser process we started
         self.all_fields = []
+        self.ticked_titles = []   # tick boxes answered on the page being filled
 
     # --- reporting
     def log(self, text):
@@ -391,6 +393,7 @@ class Filler:
         question answered in one round cannot be taken by a later, weaker match.
         Returns (fields still to place on later pages, indexes of the questions answered)."""
         pending, deferred, used = list(remaining), [], set()
+        self.ticked_titles = []  # tick boxes answered on this page, checked again at the end
         for tier in TIERS:
             if not pending or self.stop.is_set():
                 break
@@ -416,6 +419,7 @@ class Filler:
                     used.add(index)
                 page.wait_for_timeout(self.pause_ms)
             pending = next_round
+        self._recheck_ticks(page, self.ticked_titles)
         return pending + deferred, used
 
     def _container(self, page, index, title):
@@ -455,7 +459,8 @@ class Filler:
                 container.scroll_into_view_if_needed()
                 notes = []
                 if ftype == "tick":
-                    self._do_tick(container)
+                    notes = [self._do_tick(page, container)]
+                    self.ticked_titles.append(card["title"])
                 elif kind == "text":
                     self._do_text(container, as_list(value)[0], click_before)
                 elif kind in ("choice", "multi"):
@@ -796,17 +801,54 @@ class Filler:
         if box.input_value().strip() != value.strip():
             raise RuntimeError("the text did not stay in the box")
 
-    def _do_tick(self, container):
-        """A single checkbox such as 'Enregistrer mon adresse e-mail': just make sure it is ticked."""
-        box = container.locator('[role="checkbox"]').first
-        box.wait_for(state="attached", timeout=8000)
-        if box.get_attribute("aria-checked") == "true":
-            return
+    def _tick_box(self, box):
+        """Tick a checkbox that is not ticked. Raises if it will not tick."""
         box.evaluate("el => el.click()")
         if box.get_attribute("aria-checked") != "true":
             box.click(force=True)
         if box.get_attribute("aria-checked") != "true":
             raise RuntimeError("could not tick the box")
+
+    def _do_tick(self, page, container):
+        """A single checkbox such as 'Enregistrer mon adresse e-mail': make sure it is ticked AND
+        stays ticked. Seeing it ticked once is not enough: it may only show a default, and Google
+        can put back a saved draft where you had unticked it a moment later. So the box is watched
+        for TICK_HOLD_MS and ticked again whenever it gets unticked. Returns a note for the log."""
+        box = container.locator('[role="checkbox"]').first
+        box.wait_for(state="attached", timeout=8000)
+        if box.get_attribute("aria-checked") == "true":
+            note = "was already ticked"
+        else:
+            self._tick_box(box)
+            note = "ticked"
+        retick = 0
+        steady = 0
+        while steady < TICK_HOLD_MS:
+            page.wait_for_timeout(200)
+            if box.get_attribute("aria-checked") == "true":
+                steady += 200
+                continue
+            retick += 1
+            if retick > 3:
+                raise RuntimeError("the box keeps getting unticked")
+            self._tick_box(box)
+            steady = 0
+        if retick:
+            note += f"; it got unticked again and was re-ticked ({retick}x)"
+        return note
+
+    def _recheck_ticks(self, page, titles):
+        """Before leaving a page: the tick boxes answered on it must still be ticked."""
+        for title in titles:
+            try:
+                container = self._container(page, 0, title)
+                box = container.locator('[role="checkbox"]').first
+                if box.get_attribute("aria-checked") != "true":
+                    self._tick_box(box)
+                    self.log(f'      "{title}": the box had been unticked again - ticked it again')
+            except Exception as err:
+                self.record("ERROR", title, f"could not re-check the tick box: {short(err)}")
+                self.error_titles.append(title)
 
     def _do_choice(self, container, value, select_all, click_before):
         """Radio buttons or checkboxes. For a "multi" field every value of the list is ticked;
