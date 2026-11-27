@@ -10,6 +10,7 @@ How a question is found and how an option is chosen is decided in matching.py.
 import json
 import os
 import queue
+import random
 import re
 import subprocess
 import threading
@@ -151,6 +152,14 @@ SECTION_JS = """() => Array.from(document.querySelectorAll('[role="heading"]'))
     .filter(t => t && t !== document.title.trim())
     .join(' | ')"""
 TICK_HOLD_MS = 1500     # a tick box must stay ticked this long before it counts as done
+# "Wait for the form to open": the form link is loaded again every WAIT_MIN_S..WAIT_MAX_S seconds
+# (random, so the checks do not look like a robot to Google) until its questions appear.
+WAIT_MIN_S = 3.0
+WAIT_MAX_S = 5.0
+WAIT_LOAD_S = 4.0           # after loading the link, how long to wait for questions to show up
+WAIT_HEARTBEAT_S = 600      # while waiting, a "still closed" line in the log every 10 minutes
+CLOSED_RE = re.compile(r"n.est plus possible de r.pondre|n.accepte plus de r|no longer accepting|"
+                       r"not accepting responses|ne peut plus .tre rempli", re.I)
 NEXT_WAIT_S = 20  # how long to wait for the next page after 'Suivant' (branching pages are slower)
 
 
@@ -184,13 +193,14 @@ def load_data(path):
 class Filler:
     """Runs in a background thread. Talks to the GUI only through emit()."""
 
-    def __init__(self, data, url, submit, emit, stop, keep_open=True):
+    def __init__(self, data, url, submit, emit, stop, keep_open=True, wait_open=False):
         self.data = data
         self.url = url
         self.submit = submit
         self.emit = emit
         self.stop = stop
         self.keep_open = keep_open  # False = close the browser when done (used by the tests)
+        self.wait_open = wait_open  # True = the form may still be closed: wait until it opens
         self.pause_ms = int(data.get("pause_ms", 300))
         self.key_delay_ms = int(data.get("typing_delay_ms", 40))
         self.aliases = data.get("option_aliases", {}) or {}
@@ -238,7 +248,15 @@ class Filler:
             page = context.new_page()
             self.status("Opening the form...")
             self.log(f"Opening: {self.url}")
-            page.goto(self.url, wait_until="domcontentloaded", timeout=60000)
+            if self.wait_open:
+                if not self._wait_until_open(page):
+                    self.log("Stopped by you while waiting for the form to open. Nothing was filled.")
+                    self.status("Stopped. Nothing was filled.")
+                    if not self.keep_open:
+                        self._close_browser()
+                    return
+            else:
+                page.goto(self.url, wait_until="domcontentloaded", timeout=60000)
 
             if not self._wait_for_form(page):
                 raise RuntimeError(
@@ -522,6 +540,9 @@ class Filler:
             raise RuntimeError("No Brave, Google Chrome or Microsoft Edge found on this PC. "
                                "Install Brave, then press START again.")
         name, exe = found
+        version_url = f"http://127.0.0.1:{CDP_PORT}/json/version"
+        if not headless:
+            self._close_hidden_browser(p, version_url)
         args = [exe, f"--remote-debugging-port={CDP_PORT}", f"--user-data-dir={BROWSER_DIR}",
                 "--no-first-run", "--no-default-browser-check"]
         if headless:
@@ -529,7 +550,6 @@ class Filler:
         self.log(f"Opening {name}. If Google asks you to sign in, sign in in that window.")
         self.proc = subprocess.Popen(args)
 
-        version_url = f"http://127.0.0.1:{CDP_PORT}/json/version"
         deadline = time.time() + 30
         while True:
             try:
@@ -543,6 +563,34 @@ class Filler:
                 time.sleep(0.5)
         browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
         return browser.contexts[0]
+
+    def _close_hidden_browser(self, p, version_url):
+        """If an INVISIBLE (headless) browser is still running on our port and profile (e.g. left
+        over by a test run that was killed), START would connect to it and fill the form where
+        nobody can see it. Close it, so a normal window is opened instead."""
+        try:
+            info = json.loads(urllib.request.urlopen(version_url, timeout=2).read())
+        except Exception:
+            return  # nothing running on the port: the normal case
+        if "headless" not in (info.get("User-Agent", "") + info.get("Browser", "")).lower():
+            return  # a visible browser from an earlier run: it is reused, as before
+        self.log("An invisible browser from an earlier run was still open. Closing it first.")
+        try:
+            # browser.close() would only disconnect; Browser.close really ends the browser
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
+            browser.new_browser_cdp_session().send("Browser.close")
+        except Exception:
+            pass
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(version_url, timeout=1).read()
+            except Exception:
+                time.sleep(1)  # let it release the profile before a new browser uses it
+                return
+            time.sleep(0.5)
+        raise RuntimeError("An invisible browser from an earlier run is still open and could not be closed. "
+                           "Restart the PC (or end brave.exe in the Task Manager), then press START again.")
 
     def _close_browser(self):
         if self.proc is not None and self.proc.poll() is None:
@@ -584,6 +632,68 @@ class Filler:
                 return True
             page.wait_for_timeout(300)
             waited += 300
+        return False
+
+    def _form_state(self, page):
+        """What the loaded link shows: "open" (questions are there), "closed" (Google's 'no longer
+        accepting responses' page), "signin" (Google asks to sign in) or "unknown" (anything else:
+        an error page, no network...). Only "open" starts the filling, so a page we do not
+        recognise can never start it by mistake."""
+        deadline = time.time() + WAIT_LOAD_S
+        while True:
+            if "accounts.google" in page.url:
+                return "signin"
+            try:
+                if self._tag(page) > 0 and page.locator(LISTITEM).count() > 0:
+                    return "open"
+                if "closedform" in page.url or CLOSED_RE.search(page.inner_text("body")):
+                    return "closed"
+            except Exception:
+                pass  # the page is still loading
+            if time.time() > deadline:
+                return "unknown"
+            page.wait_for_timeout(250)
+
+    def _wait_until_open(self, page):
+        """Load the form link again and again (every WAIT_MIN_S..WAIT_MAX_S s) until its questions
+        appear. The original link is loaded each time, not page.reload(): a closed form may have
+        moved to a '/closedform' address, and reloading that would never show the opened form.
+        Returns True when the form is open, False if STOP was pressed."""
+        started = time.time()
+        last_state, last_heartbeat, checks = None, time.time(), 0
+        while not self.stop.is_set():
+            why = ""
+            if "accounts.google" in page.url:
+                state = "signin"  # do not reload the sign-in page: the person is signing in
+            else:
+                try:
+                    page.goto(self.url, wait_until="domcontentloaded", timeout=30000)
+                    state = self._form_state(page)
+                except Exception as err:
+                    state, why = "unknown", short(err)
+            checks += 1
+            if state == "open":
+                waited = time.time() - started
+                self.log(f"THE FORM IS OPEN (after {checks} check(s), {waited / 60:.1f} min of waiting). Filling now.")
+                return True
+            if state != last_state:
+                self.log({
+                    "closed": "The form is closed (not accepting responses). Checking every "
+                              f"{WAIT_MIN_S:g}-{WAIT_MAX_S:g} s; it will be filled as soon as it opens.",
+                    "signin": "Google asks you to sign in. Sign in in the browser window; waiting continues.",
+                    "unknown": "The form link does not show the form yet" + (f" ({why})" if why else "")
+                               + ". Still checking.",
+                }[state])
+                last_state = state
+            if time.time() - last_heartbeat >= WAIT_HEARTBEAT_S:
+                self.log(f"Still waiting: {checks} check(s) so far, form {state}.")
+                last_heartbeat = time.time()
+            pause = random.uniform(WAIT_MIN_S, WAIT_MAX_S)
+            self.status(f"Waiting for the form to open - {state} at {datetime.now():%H:%M:%S} "
+                        f"(check {checks}), next check in {pause:.0f} s. Press STOP to cancel.")
+            end = time.time() + pause
+            while time.time() < end and not self.stop.is_set():
+                time.sleep(0.2)
         return False
 
     def _signature(self, page):
@@ -1040,6 +1150,7 @@ class App:
         self.data_path = tk.StringVar(value=DEFAULT_DATA)
         self.url_var = tk.StringVar()
         self.submit_var = tk.BooleanVar(value=False)
+        self.wait_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Ready. Press CHECK FORM to see how your answers fit the form, "
                                              "then START FILLING.")
 
@@ -1064,11 +1175,19 @@ class App:
         tk.Label(frame, text="2. Form link", font=("Segoe UI", 12, "bold")).grid(row=3, column=0, sticky="w")
         tk.Entry(frame, textvariable=self.url_var).grid(row=4, column=0, sticky="ew", pady=(2, 12))
 
+        options = tk.Frame(frame)
+        options.grid(row=5, column=0, sticky="w", pady=(0, 12))
         tk.Checkbutton(
-            frame,
+            options,
             text="Send the form automatically at the end  (leave OFF to check it yourself first)",
             variable=self.submit_var,
-        ).grid(row=5, column=0, sticky="w", pady=(0, 12))
+        ).pack(anchor="w")
+        tk.Checkbutton(
+            options,
+            text=f"Wait for the form to open, then fill it  (if the form is still closed: "
+                 f"it is checked every {WAIT_MIN_S:g}-{WAIT_MAX_S:g} s)",
+            variable=self.wait_var,
+        ).pack(anchor="w")
 
         row2 = tk.Frame(frame)
         row2.grid(row=6, column=0, sticky="w")
@@ -1204,7 +1323,9 @@ class App:
                 "Send the form?",
                 "The form WILL be sent automatically when everything is filled.\n\nContinue?"):
             return
-        self._launch(Filler, data, url, submit, f"Started {datetime.now():%Y-%m-%d %H:%M}")
+        wait = self.wait_var.get()
+        self._launch(Filler, data, url, submit, f"Started {datetime.now():%Y-%m-%d %H:%M}"
+                     + (" - waiting for the form to open" if wait else ""), wait_open=wait)
 
     def check_form(self):
         ready = self._ready()
@@ -1214,17 +1335,17 @@ class App:
         self._launch(FormChecker, data, url, False, f"Form check {datetime.now():%Y-%m-%d %H:%M} "
                                                     "(nothing is filled or sent)")
 
-    def _launch(self, runner, data, url, submit, first_line):
+    def _launch(self, runner, data, url, submit, first_line, **options):
         self.stop.clear()
         self.set_running(True)
         self.clear_log()
         self.append(first_line)
-        self.worker = threading.Thread(target=self._work, args=(runner, data, url, submit), daemon=True)
+        self.worker = threading.Thread(target=self._work, args=(runner, data, url, submit, options), daemon=True)
         self.worker.start()
 
-    def _work(self, runner, data, url, submit):
+    def _work(self, runner, data, url, submit, options):
         try:
-            runner(data, url, submit, lambda kind, text: self.queue.put((kind, text)), self.stop).run()
+            runner(data, url, submit, lambda kind, text: self.queue.put((kind, text)), self.stop, **options).run()
         except Exception as err:
             self.queue.put(("log", f"STOPPED WITH AN ERROR: {short(err)}"))
             self.queue.put(("status", "Something went wrong. See the log above."))

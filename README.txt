@@ -15,6 +15,15 @@ ON THE DAY (the form just opened)
   4. Check the form in the browser and press "Envoyer" yourself, unless you
      ticked "Send the form automatically".
 
+BEFORE IT OPENS (the form is still closed)
+  1. Start the app early, paste the link, tick "Wait for the form to open,
+     then fill it" and press START FILLING.
+  2. The app loads the link every 3-5 seconds. The status line shows the last
+     check. When the questions appear it fills the form at once.
+  3. Leave the PC on and awake (no sleep mode). STOP cancels the waiting.
+  Note: CHECK FORM cannot read a closed form. Check your answers on a test
+  form beforehand.
+
 THE ANSWERS FILE (data.json)
   "profile": your details, written once:
       "profile": { "last_name": "...", "first_name": "...", "phone": "...", "email": "..." }
