@@ -75,6 +75,17 @@
       "value": "C:/Users/Youssef/Desktop/formulaire/autofill/pdfs/tst2.pdf", "optional": true },
     { "question": "Attestation sur l'honneur signée avec la mention \"Lu et approuvé\"", "type": "file",
       "keywords": ["attestation", "honneur"],
-      "value": "C:/Users/Youssef/Desktop/formulaire/autofill/pdfs/tst3.pdf", "optional": true }
+      "value": "C:/Users/Youssef/Desktop/formulaire/autofill/pdfs/tst3.pdf", "optional": true },
+    { "question": "Carte d'identité nationale (CIN)",
+      "aliases": ["CIN", "Carte d'identité nationale", "Carte nationale d'identité", "Carte d'identité", "Copie de la CIN"],
+      "type": "file", "keywords": ["identit"],
+      "value": "C:/Users/Youssef/Desktop/formulaire/autofill/pdfs/tst4.pdf", "optional": true },
+    { "question": "Certificat de langue anglaise",
+      "aliases": ["Certificat d'anglais", "Certificat de langue", "English certificate", "EF SET"],
+      "type": "file", "keywords": ["anglais"],
+      "value": "C:/Users/Youssef/Desktop/formulaire/autofill/pdfs/tst5.pdf", "optional": true },
+
+    { "question": "Je certifie sur l'honneur", "aliases": ["Je certifie", "Je certifie sur l'honneur que"],
+      "type": "tick", "optional": true }
   ]
 }

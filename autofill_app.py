@@ -2,7 +2,7 @@
 Form Auto-Filler
 ----------------
 A simple window that fills a Google Form for you using the answers in data.json.
-Start it with start.bat (run setup.bat once first).
+Start it with start.bat on Windows or start.command on a Mac (run setup.bat / setup.command once first).
 
 How a question is found and how an option is chosen is decided in matching.py.
 """
@@ -13,6 +13,7 @@ import queue
 import random
 import re
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -22,7 +23,7 @@ from tkinter import filedialog, messagebox, scrolledtext
 
 from matching import (FIELD_TYPES, PLACEHOLDER_OPTIONS, TIER_TEXT, TIERS, as_list, check_structure,  # noqa: F401
                       choice_note, clean_title, field_type, find_card, norm, parse_fb, pick_index,
-                      pick_option, prepare_fields, snippet_for, title_claims)
+                      is_confirmation, pick_option, prepare_fields, snippet_for, title_claims)
 from matching import validate as _validate
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -31,18 +32,30 @@ LOG_FILE = os.path.join(BASE_DIR, "last_run_log.txt")
 BROWSER_DIR = os.environ.get("AUTOFILL_PROFILE_DIR", os.path.join(BASE_DIR, "browser_data"))
 CDP_PORT = int(os.environ.get("AUTOFILL_CDP_PORT", "9333"))
 
-PF = os.environ.get("PROGRAMFILES", r"C:\Program Files")
-PF86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
-LAPPDATA = os.environ.get("LOCALAPPDATA", "")
-BROWSERS = [  # (name, path) in order of preference
-    ("Brave", os.path.join(PF, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
-    ("Brave", os.path.join(PF86, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
-    ("Brave", os.path.join(LAPPDATA, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
-    ("Google Chrome", os.path.join(PF, "Google", "Chrome", "Application", "chrome.exe")),
-    ("Google Chrome", os.path.join(PF86, "Google", "Chrome", "Application", "chrome.exe")),
-    ("Microsoft Edge", os.path.join(PF86, "Microsoft", "Edge", "Application", "msedge.exe")),
-    ("Microsoft Edge", os.path.join(PF, "Microsoft", "Edge", "Application", "msedge.exe")),
-]
+IS_MAC = sys.platform == "darwin"
+if IS_MAC:
+    _MAC_APPS = ["/Applications", os.path.expanduser("~/Applications")]
+    BROWSERS = [  # (name, path) in order of preference
+        (name, os.path.join(folder, f"{app}.app", "Contents", "MacOS", app))
+        for name, app in (("Brave", "Brave Browser"), ("Google Chrome", "Google Chrome"),
+                          ("Microsoft Edge", "Microsoft Edge"))
+        for folder in _MAC_APPS
+    ]
+    UI_FONT, MONO_FONT, FONT_GROW = "Helvetica Neue", "Menlo", 2  # Mac fonts look smaller at the same size
+else:
+    PF = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+    PF86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+    LAPPDATA = os.environ.get("LOCALAPPDATA", "")
+    BROWSERS = [  # (name, path) in order of preference
+        ("Brave", os.path.join(PF, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
+        ("Brave", os.path.join(PF86, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
+        ("Brave", os.path.join(LAPPDATA, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
+        ("Google Chrome", os.path.join(PF, "Google", "Chrome", "Application", "chrome.exe")),
+        ("Google Chrome", os.path.join(PF86, "Google", "Chrome", "Application", "chrome.exe")),
+        ("Microsoft Edge", os.path.join(PF86, "Microsoft", "Edge", "Application", "msedge.exe")),
+        ("Microsoft Edge", os.path.join(PF, "Microsoft", "Edge", "Application", "msedge.exe")),
+    ]
+    UI_FONT, MONO_FONT, FONT_GROW = "Segoe UI", "Consolas", 0
 NEXT_WORDS = ["suivant", "next", "continuer", "continue"]
 SUBMIT_WORDS = ["envoyer", "submit", "soumettre"]
 MAX_PAGES = 15
@@ -184,9 +197,21 @@ def validate(data, url=None):
     return _validate(data, url, os.path.isfile, resolve_path)
 
 
+SMART_QUOTES = str.maketrans({"“": '"', "”": '"', "„": '"', "«": '"', "»": '"'})
+
+
 def load_data(path):
     with open(path, encoding="utf-8-sig") as handle:
-        return json.load(handle)
+        text = handle.read()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # TextEdit (Mac) and Word turn " into curly quotes while typing, which breaks the file.
+        # Straight quotes are what was meant, so read it again with those.
+        fixed = text.translate(SMART_QUOTES)
+        if fixed == text:
+            raise
+        return json.loads(fixed)
 
 
 # ---------------------------------------------------------------- browser work
@@ -204,6 +229,8 @@ class Filler:
         self.pause_ms = int(data.get("pause_ms", 300))
         self.key_delay_ms = int(data.get("typing_delay_ms", 40))
         self.aliases = data.get("option_aliases", {}) or {}
+        # tick required confirmation boxes that are not in data.json (see is_confirmation)
+        self.auto_tick = data.get("auto_tick_confirmations", True) is not False
         self.results = []         # one entry per outcome: OK, ERROR, NOT FOUND, NEW, BLOCKED, MANUAL, SKIPPED
         self.problem_lines = []   # shown in the popup at the end
         self.unmatched = {}       # questions on the form that are not in data.json
@@ -437,6 +464,7 @@ class Filler:
                     used.add(index)
                 page.wait_for_timeout(self.pause_ms)
             pending = next_round
+        used |= self._auto_tick(page, used)
         self._recheck_ticks(page, self.ticked_titles)
         return pending + deferred, used
 
@@ -537,7 +565,7 @@ class Filler:
         os.makedirs(BROWSER_DIR, exist_ok=True)
         found = next(((name, path) for name, path in BROWSERS if os.path.isfile(path)), None)
         if not found:
-            raise RuntimeError("No Brave, Google Chrome or Microsoft Edge found on this PC. "
+            raise RuntimeError("No Brave, Google Chrome or Microsoft Edge found on this computer. "
                                "Install Brave, then press START again.")
         name, exe = found
         version_url = f"http://127.0.0.1:{CDP_PORT}/json/version"
@@ -590,7 +618,7 @@ class Filler:
                 return
             time.sleep(0.5)
         raise RuntimeError("An invisible browser from an earlier run is still open and could not be closed. "
-                           "Restart the PC (or end brave.exe in the Task Manager), then press START again.")
+                           "Restart the computer, then press START again.")
 
     def _close_browser(self):
         if self.proc is not None and self.proc.poll() is None:
@@ -920,45 +948,78 @@ class Filler:
             raise RuntimeError("could not tick the box")
 
     def _do_tick(self, page, container):
-        """A single checkbox such as 'Enregistrer mon adresse e-mail': make sure it is ticked AND
-        stays ticked. Seeing it ticked once is not enough: it may only show a default, and Google
-        can put back a saved draft where you had unticked it a moment later. So the box is watched
-        for TICK_HOLD_MS and ticked again whenever it gets unticked. Returns a note for the log."""
-        box = container.locator('[role="checkbox"]').first
-        box.wait_for(state="attached", timeout=8000)
-        if box.get_attribute("aria-checked") == "true":
-            note = "was already ticked"
+        """Tick EVERY box of the question ('Enregistrer mon adresse e-mail', or 'Je certifie sur
+        l'honneur' with its two boxes) and make sure they STAY ticked. Seeing a box ticked once is
+        not enough: it may only show a default, and Google can put back a saved draft where you had
+        unticked it a moment later. So the boxes are watched for TICK_HOLD_MS and ticked again
+        whenever one gets unticked. Returns a note for the log."""
+        boxes = container.locator('[role="checkbox"]')
+        boxes.first.wait_for(state="attached", timeout=8000)
+        count = boxes.count()
+        ticked = 0
+        for i in range(count):
+            if boxes.nth(i).get_attribute("aria-checked") != "true":
+                self._tick_box(boxes.nth(i))
+                ticked += 1
+        if count == 1:
+            note = "ticked" if ticked else "was already ticked"
         else:
-            self._tick_box(box)
-            note = "ticked"
+            note = f"{count} boxes ticked" + (f" ({count - ticked} already were)" if ticked < count else "")
         retick = 0
         steady = 0
         while steady < TICK_HOLD_MS:
             page.wait_for_timeout(200)
-            if box.get_attribute("aria-checked") == "true":
+            undone = [i for i in range(count) if boxes.nth(i).get_attribute("aria-checked") != "true"]
+            if not undone:
                 steady += 200
                 continue
             retick += 1
             if retick > 3:
-                raise RuntimeError("the box keeps getting unticked")
-            self._tick_box(box)
+                raise RuntimeError("a box keeps getting unticked")
+            for i in undone:
+                self._tick_box(boxes.nth(i))
             steady = 0
         if retick:
-            note += f"; it got unticked again and was re-ticked ({retick}x)"
+            note += f"; a box got unticked again and was re-ticked ({retick}x)"
         return note
 
     def _recheck_ticks(self, page, titles):
-        """Before leaving a page: the tick boxes answered on it must still be ticked."""
+        """Before leaving a page: the boxes ticked on it must still be ticked."""
         for title in titles:
             try:
-                container = self._container(page, 0, title)
-                box = container.locator('[role="checkbox"]').first
-                if box.get_attribute("aria-checked") != "true":
-                    self._tick_box(box)
-                    self.log(f'      "{title}": the box had been unticked again - ticked it again')
+                boxes = self._container(page, 0, title).locator('[role="checkbox"]')
+                undone = [i for i in range(boxes.count()) if boxes.nth(i).get_attribute("aria-checked") != "true"]
+                for i in undone:
+                    self._tick_box(boxes.nth(i))
+                if undone:
+                    self.log(f'      "{title}": a box had been unticked again - ticked it again')
             except Exception as err:
                 self.record("ERROR", title, f"could not re-check the tick box: {short(err)}")
                 self.error_titles.append(title)
+
+    def _auto_tick(self, page, used):
+        """Required confirmation boxes that data.json does not mention (see is_confirmation in
+        matching.py): tick them, or the form cannot be sent. Returns the indexes answered."""
+        done = set()
+        if not self.auto_tick:
+            return done
+        cards = self._cards(page)
+        claimed = set(used) | title_claims(cards, self.all_fields, self.aliases)
+        for index, card in enumerate(cards):
+            if index in claimed or not is_confirmation(card) or self.stop.is_set():
+                continue
+            title = card["title"]
+            try:
+                container = self._container(page, index, title)
+                container.scroll_into_view_if_needed()
+                note = self._do_tick(page, container)
+                self.record("OK", title, f"not in data.json, but a required confirmation: {note} automatically")
+                self.ticked_titles.append(title)
+                done.add(index)
+            except Exception as err:
+                self.record("ERROR", title, f"required confirmation, could not tick it: {short(err)}")
+                self.error_titles.append(title)
+        return done
 
     def _do_choice(self, container, value, select_all, click_before):
         """Radio buttons or checkboxes. For a "multi" field every value of the list is ticked;
@@ -1092,7 +1153,7 @@ class FormChecker(Filler):
                     self.log(note)
                 total = sum(len(cards) for cards in pages)
                 self.log(f"The form has {total} question(s) on {len(pages)} page(s).")
-                self.entries = check_structure(pages, fields, self.aliases)
+                self.entries = check_structure(pages, fields, self.aliases, self.auto_tick)
                 for status, text in self.entries:
                     self.log(f"[{status}] {text}")
                 self._report()
@@ -1141,6 +1202,14 @@ class FormChecker(Filler):
 
 
 # ---------------------------------------------------------------- window
+def big_button(parent, text, color, size, padx, command, **options):
+    """A big coloured button. On a Mac the system draws buttons itself and ignores the background
+    colour (white text would then be invisible), so there it keeps the normal colours."""
+    colors = {} if IS_MAC else {"bg": color, "fg": "white"}
+    return tk.Button(parent, text=text, font=(UI_FONT, size + FONT_GROW, "bold"), padx=padx, pady=6,
+                     command=command, **colors, **options)
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -1157,13 +1226,12 @@ class App:
         root.title("Form Auto-Filler")
         root.geometry("820x700")
         root.minsize(700, 560)
-        font = ("Segoe UI", 11)
-        root.option_add("*Font", font)
+        root.option_add("*Font", (UI_FONT, 11 + FONT_GROW))
 
         frame = tk.Frame(root, padx=16, pady=12)
         frame.pack(fill="both", expand=True)
 
-        tk.Label(frame, text="1. Your answers file", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(frame, text="1. Your answers file", font=(UI_FONT, 12 + FONT_GROW, "bold")).grid(row=0, column=0, sticky="w")
         tk.Entry(frame, textvariable=self.data_path).grid(row=1, column=0, sticky="ew", pady=(2, 0))
         row1 = tk.Frame(frame)
         row1.grid(row=2, column=0, sticky="w", pady=(4, 12))
@@ -1172,7 +1240,7 @@ class App:
         tk.Button(row1, text="Check file", command=self.check_file).pack(side="left")
         tk.Button(row1, text="Documents to upload...", command=self.open_documents).pack(side="left", padx=6)
 
-        tk.Label(frame, text="2. Form link", font=("Segoe UI", 12, "bold")).grid(row=3, column=0, sticky="w")
+        tk.Label(frame, text="2. Form link", font=(UI_FONT, 12 + FONT_GROW, "bold")).grid(row=3, column=0, sticky="w")
         tk.Entry(frame, textvariable=self.url_var).grid(row=4, column=0, sticky="ew", pady=(2, 12))
 
         options = tk.Frame(frame)
@@ -1191,23 +1259,19 @@ class App:
 
         row2 = tk.Frame(frame)
         row2.grid(row=6, column=0, sticky="w")
-        self.check_btn = tk.Button(row2, text="CHECK FORM", bg="#1565c0", fg="white",
-                                   font=("Segoe UI", 12, "bold"), padx=14, pady=6, command=self.check_form)
+        self.check_btn = big_button(row2, "CHECK FORM", "#1565c0", 12, 14, self.check_form)
         self.check_btn.pack(side="left")
-        self.start_btn = tk.Button(row2, text="START FILLING", bg="#2e7d32", fg="white",
-                                   font=("Segoe UI", 12, "bold"), padx=18, pady=6, command=self.start)
+        self.start_btn = big_button(row2, "START FILLING", "#2e7d32", 12, 18, self.start)
         self.start_btn.pack(side="left", padx=10)
-        self.stop_btn = tk.Button(row2, text="STOP", bg="#c62828", fg="white",
-                                  font=("Segoe UI", 11, "bold"), padx=14, pady=6,
-                                  command=self.request_stop, state="disabled")
+        self.stop_btn = big_button(row2, "STOP", "#c62828", 11, 14, self.request_stop, state="disabled")
         self.stop_btn.pack(side="left")
 
         tk.Label(frame, textvariable=self.status_var, fg="#1565c0", wraplength=760,
                  justify="left").grid(row=7, column=0, sticky="w", pady=(12, 4))
 
-        tk.Label(frame, text="Log", font=("Segoe UI", 11, "bold")).grid(row=8, column=0, sticky="w")
+        tk.Label(frame, text="Log", font=(UI_FONT, 11 + FONT_GROW, "bold")).grid(row=8, column=0, sticky="w")
         self.log_box = scrolledtext.ScrolledText(frame, height=16, state="disabled", wrap="word",
-                                                 font=("Consolas", 10))
+                                                 font=(MONO_FONT, 10 + FONT_GROW))
         self.log_box.grid(row=9, column=0, sticky="nsew")
         tk.Button(frame, text="Clear log", command=self.clear_log).grid(row=10, column=0, sticky="e", pady=(6, 0))
 
@@ -1238,7 +1302,10 @@ class App:
         if not os.path.exists(path):
             messagebox.showerror("File not found", f"This file does not exist:\n{path}")
             return
-        os.startfile(path)  # opens in Notepad
+        if IS_MAC:
+            subprocess.Popen(["open", "-e", path])  # opens in TextEdit
+        else:
+            os.startfile(path)  # opens in Notepad
 
     def open_documents(self):
         """A small window: one row per document, with its current file and a 'Choose file' button."""
@@ -1405,4 +1472,9 @@ class App:
 if __name__ == "__main__":
     tk_root = tk.Tk()
     App(tk_root)
+    if IS_MAC:  # started from Terminal, the window would open behind it
+        tk_root.lift()
+        tk_root.attributes("-topmost", True)
+        tk_root.after(800, lambda: tk_root.attributes("-topmost", False))
+        tk_root.focus_force()
     tk_root.mainloop()

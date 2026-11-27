@@ -83,7 +83,8 @@ def words(text):
 
 def clean_title(text):
     text = re.sub(r"obligatoire|required", " ", str(text), flags=re.I)
-    return text.split("\n")[0].strip().rstrip("*").strip()
+    text = re.sub(r"\(\s*\)", " ", text.split("\n")[0])  # "(Obligatoire)" leaves "( )"
+    return re.sub(r" {2,}", " ", text).strip().rstrip("*").strip()
 
 
 def number_of_word(word):
@@ -334,6 +335,23 @@ def find_card(cards, field, tier, used=(), aliases=None):
     raise ValueError(tier)
 
 
+# Words of a confirmation box ("Avoir lu, approuvé et signé...", "Je certifie...", "J'accepte..."),
+# compared after norm() (no accents, no spaces).
+CONFIRM_STEMS = ("certifi", "atteste", "accept", "approuv", "jailu", "honneur", "agree", "confirm",
+                 "consent", "engage", "declare", "autoris", "reconnai")
+
+
+def is_confirmation(card):
+    """A required checkbox question whose only sensible answer is to tick its box(es):
+    - it has a single box (ticking it is the only way the form lets you go on), or
+    - every box is a confirmation ("Avoir lu, approuvé et signé...", "J'accepte...").
+    A required question with ordinary options (e.g. countries to choose) is never one."""
+    options = card.get("options") or []
+    if card.get("kind") != "multi" or not card.get("required") or not options:
+        return False
+    return len(options) == 1 or all(any(s in norm(o) for s in CONFIRM_STEMS) for o in options)
+
+
 def title_claims(cards, fields, aliases=None):
     """Indexes of the cards that some field matches by its title (exact or partial)."""
     claimed = set()
@@ -396,7 +414,7 @@ def describe_answer(field, card, aliases=None):
         return "exact", (f"document {os.path.basename(path)}" if path else
                          "no file chosen: you will upload it yourself")
     if ftype == "tick":
-        return "exact", "the box will be ticked"
+        return "exact", "its box(es) will be ticked"
     options = card.get("options") or []
     if kind == "text" or not options:
         return "exact", f'"{as_list(value)[0]}"'
@@ -425,7 +443,7 @@ def snippet_for(card):
     return json.dumps(snippet, ensure_ascii=False)
 
 
-def check_structure(pages, fields, aliases=None):
+def check_structure(pages, fields, aliases=None, auto_tick=True):
     """Dry run of the filling over every page. Nothing is clicked.
     Returns a list of (status, text):
       OK        found, answer is exact
@@ -434,7 +452,9 @@ def check_structure(pages, fields, aliases=None):
       NOT FOUND no question for this entry
       SKIPPED   optional entry, not on this form
       MISSING   required question that data.json does not answer (the form would be blocked)
-      NEW       optional question that data.json does not answer"""
+      NEW       optional question that data.json does not answer
+    With auto_tick, a required confirmation box missing from data.json (see is_confirmation) is
+    reported as CHECK: the filling ticks it by itself."""
     entries = []
     pending = list(fields)
     misses = {}
@@ -489,7 +509,11 @@ def check_structure(pages, fields, aliases=None):
     for page_no, card in unanswered:
         if norm(card["title"]) in answered_titles:
             continue  # the same question on another branch, e.g. the SCORE page when you chose SCOPE
-        if card.get("required"):
+        if auto_tick and is_confirmation(card):
+            entries.append(("CHECK", f'"{card["title"]}" (page {page_no}) is not in data.json: it is a required '
+                            "confirmation, so its box(es) will be ticked automatically: "
+                            + " | ".join(o[:60] for o in card["options"][:4])))
+        elif card.get("required"):
             entries.append(("MISSING", f'required question not in data.json: "{card["title"]}" (page {page_no}). '
                             f"Add: {snippet_for(card)}"))
         else:
@@ -509,6 +533,8 @@ def validate(data, url=None, file_exists=os.path.isfile, resolve=lambda p: p):
     if not isinstance(aliases, dict) or not all(
             isinstance(v, list) and all(isinstance(x, str) for x in v) for v in aliases.values()):
         problems.append('"option_aliases" must look like {"CZ": ["Czechia"], "UK": ["United Kingdom"]}.')
+    if "auto_tick_confirmations" in data and not isinstance(data["auto_tick_confirmations"], bool):
+        problems.append('"auto_tick_confirmations" must be true or false.')
     profile = data.get("profile", {})
     if not isinstance(profile, dict) or not all(isinstance(v, (str, int, float)) for v in profile.values()):
         problems.append('"profile" must look like {"first_name": "...", "last_name": "..."}.')

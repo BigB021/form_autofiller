@@ -14,3 +14,9 @@ last_run_log.txt
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Python installed by setup
+.venv/
+
+# Release zips (make_release.py)
+release/

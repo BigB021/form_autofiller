@@ -1,8 +1,10 @@
 FORM AUTO-FILLER - HOW TO USE
 =============================
 
-ONE TIME ONLY
+ONE TIME ONLY  (on a Mac: follow README_MAC.txt instead)
   1. Double-click setup.bat and wait until it says "Setup finished".
+     It installs Python by itself if this PC does not have it (no password
+     needed). You need Google Chrome, Brave or Edge.
   2. Double-click start.bat, press CHECK FORM once and sign in to Google in the
      browser window that opens. The app remembers you after that.
 
@@ -34,7 +36,8 @@ THE ANSWERS FILE (data.json)
     "aliases"   other wordings of the same question, e.g. ["Nom et prénom", "Prénom et nom"]
     "keywords"  words that must all be in the question, e.g. ["attestation", "honneur"]
     "type"      text, choice (radio buttons), dropdown, multi (several checkboxes),
-                file (a document to upload), tick (a single box to tick)
+                file (a document to upload), tick (every box of the question is
+                ticked, e.g. "E-mail" or "Je certifie sur l'honneur"; no "value")
     "value"     your answer. For choice/dropdown it can be a list of acceptable
                 answers, the first one found on the form is used:
                 ["Marrakech - AEMM", "Marrakech", "AEM-M"]
@@ -49,6 +52,13 @@ THE ANSWERS FILE (data.json)
                 "section": "SCOPE" answers them only on the page titled "... (SCOPE)",
                 "section": "SCORE" only on the SCORE page. Keep one set per programme;
                 the set of the programme you did not choose is skipped automatically.
+
+  Required confirmation boxes are ticked even if they are not in "fields":
+    a required checkbox question with a single box, or whose boxes all confirm
+    something ("Avoir lu, approuvé et signé...", "Je certifie...", "J'accepte...").
+    The log shows each one. A required question with ordinary choices (e.g.
+    countries) is never ticked this way: add it to "fields".
+    To turn this off: "auto_tick_confirmations": false  (next to "submit").
     "click_before"  true = click into the box first, then type (slower).
 
   "option_aliases": other names of an option, e.g. "CZ": ["Tchéquie", "Czech Republic"].
@@ -78,3 +88,10 @@ WHAT THE LOG SAYS
 TESTS (for whoever maintains the app)
   run_tests.bat runs all tests (about 2 minutes).
   tests\google_forms\create_test_forms.gs can create test forms in your Google Drive.
+
+SENDING THE APP TO FRIENDS (for whoever maintains the app)
+  Run:  python make_release.py
+  It makes release\Form-Auto-Filler-Windows.zip and release\Form-Auto-Filler-Mac.zip.
+  Send those, not a zip of this folder: they leave out your Google sign-in
+  (browser_data), your documents and logs, and the Mac one keeps its scripts
+  runnable.

@@ -1,0 +1,3 @@
+# Mac scripts must keep Unix line endings, Windows scripts Windows ones
+*.command text eol=lf
+*.bat text eol=crlf
